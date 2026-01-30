@@ -37,7 +37,7 @@ def get_uids():
 
 @app.route('/uid', methods=['POST'])
 def add_uid():
-    """Agrega o actualiza un UID"""
+    """Agrega o actualiza un UID - CON DÍAS OPCIONALES"""
     data = request.get_json()
     
     uid = str(data.get('uid', ''))
@@ -45,12 +45,19 @@ def add_uid():
     openid = data.get('openid', '')
     access_token = data.get('access_token', '')
     platform = str(data.get('platform', ''))
+    days = int(data.get('days', 0))  # ← RECIBE DÍAS AL CREAR
     
     if not uid:
         return jsonify({"error": "UID requerido"}), 400
     
     uids = load_uids()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Calcular fecha de expiración si hay días
+    expire_date = None
+    if days > 0:
+        new_expire = datetime.now() + timedelta(days=days)
+        expire_date = new_expire.isoformat()
     
     # Buscar si ya existe
     found = False
@@ -61,18 +68,23 @@ def add_uid():
             entry['access_token'] = access_token
             entry['platform'] = platform
             entry['last_seen'] = now
+            # Si se enviaron días, actualizar
+            if days > 0:
+                entry['expire_date'] = expire_date
+                entry['days_remaining'] = days
             found = True
             break
     
     if not found:
+        # Crear nuevo UID con días
         uids.append({
             "uid": uid,
             "region": region,
             "openid": openid,
             "access_token": access_token,
             "platform": platform,
-            "days_remaining": 0,
-            "expire_date": None,
+            "days_remaining": days,
+            "expire_date": expire_date,
             "first_seen": now,
             "last_seen": now
         })
@@ -82,6 +94,8 @@ def add_uid():
     return jsonify({
         "success": True,
         "uid": uid,
+        "days_added": days,
+        "expire_date": expire_date,
         "total_uids": len(uids)
     })
 
@@ -100,7 +114,7 @@ def get_uid(uid):
 
 @app.route('/uid/<uid>/check', methods=['GET'])
 def check_uid(uid):
-    """Verifica si un UID tiene acceso activo"""
+    """Verifica si un UID tiene acceso activo - USADO POR EL BYPASS"""
     uids = load_uids()
     for entry in uids:
         if entry.get('uid') == str(uid):
@@ -124,7 +138,7 @@ def check_uid(uid):
 
 @app.route('/uid/<uid>/adddays', methods=['POST'])
 def add_days(uid):
-    """Agrega días a un UID"""
+    """Agrega días a un UID existente"""
     data = request.get_json()
     days = int(data.get('days', 0))
     
@@ -137,11 +151,14 @@ def add_days(uid):
         if entry.get('uid') == str(uid):
             if entry.get('expire_date'):
                 expire_dt = datetime.fromisoformat(entry['expire_date'])
+                # Si ya expiró, empezar desde ahora
                 if expire_dt < datetime.now():
                     new_expire = datetime.now() + timedelta(days=days)
                 else:
+                    # Si aún tiene días, extender
                     new_expire = expire_dt + timedelta(days=days)
             else:
+                # Primera vez
                 new_expire = datetime.now() + timedelta(days=days)
             
             entry['expire_date'] = new_expire.isoformat()
@@ -160,7 +177,7 @@ def add_days(uid):
 
 @app.route('/uid/<uid>/remove', methods=['DELETE'])
 def remove_uid(uid):
-    """Elimina un UID"""
+    """Elimina un UID - QUITA ACCESO AL BYPASS"""
     uids = load_uids()
     
     for i, entry in enumerate(uids):
