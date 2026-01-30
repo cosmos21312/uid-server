@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 # ========== CONFIGURACIÓN MONGODB ==========
 # REEMPLAZA ESTO con tu connection string de MongoDB
-MONGO_URI = "mongodb+srv://martinococabrera_db_user:<db_password>@uid.mkzfekr.mongodb.net/?appName=uid"
+MONGO_URI = "mongodb+srv://martinococabrera_db_user:j87DNKimHvp1KAF@uid.wzkfekr.mongodb.net/?retryWrites=true&w=majority&tls=true&tlsAllowInvalidCertificates=true"
 
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
