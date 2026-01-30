@@ -1,55 +1,43 @@
 from flask import Flask, request, jsonify
-from pymongo import MongoClient
-from datetime import datetime, timedelta
+import json
 import os
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
-# ========== CONFIGURACIÓN MONGODB ==========
-MONGO_URI = "mongodb+srv://martinococabrera_db_user:j87DNKimHvp1KAF@uid.mkzfekr.mongodb.net/?retryWrites=true&w=majority&appName=uid"
+UID_FILE = "uids.json"
 
-try:
-    client = MongoClient(
-        MONGO_URI,
-        serverSelectionTimeoutMS=10000,
-        tls=True,
-        tlsAllowInvalidCertificates=True  # Deshabilita verificación SSL estricta para Render
-    )
-    db = client['uid_database']
-    uids_collection = db['uids']
-    # Test de conexión
-    client.server_info()
-    print("✅ Conectado a MongoDB Atlas")
-except Exception as e:
-    print(f"❌ Error conectando a MongoDB: {e}")
-    uids_collection = None
+def load_uids():
+    """Carga la base de UIDs"""
+    if os.path.exists(UID_FILE):
+        try:
+            with open(UID_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-# ========== RUTAS ==========
+def save_uids(data):
+    """Guarda la base de UIDs"""
+    with open(UID_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 @app.route('/')
 def home():
-    return "UID Server Running with MongoDB! 🚀"
-
+    return "UID Server Running! 🚀"
 
 @app.route('/uids', methods=['GET'])
 def get_uids():
     """Obtiene todos los UIDs"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
-    
-    uids = list(uids_collection.find({}, {'_id': 0}))
+    uids = load_uids()
     return jsonify({
         "total": len(uids),
         "uids": uids
     })
 
-
 @app.route('/uid', methods=['POST'])
 def add_uid():
     """Agrega o actualiza un UID"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
-    
     data = request.get_json()
     
     uid = str(data.get('uid', ''))
@@ -61,26 +49,23 @@ def add_uid():
     if not uid:
         return jsonify({"error": "UID requerido"}), 400
     
+    uids = load_uids()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     # Buscar si ya existe
-    existing = uids_collection.find_one({"uid": uid})
+    found = False
+    for entry in uids:
+        if entry.get('uid') == uid:
+            entry['region'] = region
+            entry['openid'] = openid
+            entry['access_token'] = access_token
+            entry['platform'] = platform
+            entry['last_seen'] = now
+            found = True
+            break
     
-    if existing:
-        # Actualizar
-        uids_collection.update_one(
-            {"uid": uid},
-            {"$set": {
-                "region": region,
-                "openid": openid,
-                "access_token": access_token,
-                "platform": platform,
-                "last_seen": now
-            }}
-        )
-    else:
-        # Crear nuevo sin días
-        uids_collection.insert_one({
+    if not found:
+        uids.append({
             "uid": uid,
             "region": region,
             "openid": openid,
@@ -92,53 +77,44 @@ def add_uid():
             "last_seen": now
         })
     
-    total = uids_collection.count_documents({})
+    save_uids(uids)
     
     return jsonify({
         "success": True,
         "uid": uid,
-        "total_uids": total
+        "total_uids": len(uids)
     })
-
 
 @app.route('/uid/<uid>', methods=['GET'])
 def get_uid(uid):
     """Busca un UID específico"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
-    
-    entry = uids_collection.find_one({"uid": uid}, {'_id': 0})
-    
-    if entry:
-        # Calcular días restantes
-        if entry.get('expire_date'):
-            expire_dt = datetime.fromisoformat(entry['expire_date'])
-            days_left = (expire_dt - datetime.now()).days
-            entry['days_left'] = max(0, days_left)
-        return jsonify(entry)
-    
+    uids = load_uids()
+    for entry in uids:
+        if entry.get('uid') == uid:
+            if entry.get('expire_date'):
+                expire_dt = datetime.fromisoformat(entry['expire_date'])
+                days_left = (expire_dt - datetime.now()).days
+                entry['days_left'] = max(0, days_left)
+            return jsonify(entry)
     return jsonify({"error": "UID no encontrado"}), 404
-
 
 @app.route('/uid/<uid>/check', methods=['GET'])
 def check_uid(uid):
     """Verifica si un UID tiene acceso activo"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
-    
-    entry = uids_collection.find_one({"uid": uid})
-    
-    if entry and entry.get('expire_date'):
-        expire_dt = datetime.fromisoformat(entry['expire_date'])
-        
-        if datetime.now() < expire_dt:
-            days_left = (expire_dt - datetime.now()).days
-            return jsonify({
-                "active": True,
-                "uid": uid,
-                "days_left": days_left,
-                "expire_date": entry['expire_date']
-            })
+    uids = load_uids()
+    for entry in uids:
+        if entry.get('uid') == str(uid):
+            expire_date = entry.get('expire_date')
+            if expire_date:
+                expire_dt = datetime.fromisoformat(expire_date)
+                if datetime.now() < expire_dt:
+                    days_left = (expire_dt - datetime.now()).days
+                    return jsonify({
+                        "active": True,
+                        "uid": uid,
+                        "days_left": days_left,
+                        "expire_date": expire_date
+                    })
     
     return jsonify({
         "active": False,
@@ -146,68 +122,57 @@ def check_uid(uid):
         "message": "No tiene días activos. Contacte al administrador."
     })
 
-
 @app.route('/uid/<uid>/adddays', methods=['POST'])
 def add_days(uid):
     """Agrega días a un UID"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
-    
     data = request.get_json()
     days = int(data.get('days', 0))
     
     if days <= 0:
         return jsonify({"error": "Días debe ser mayor a 0"}), 400
     
-    entry = uids_collection.find_one({"uid": str(uid)})
+    uids = load_uids()
     
-    if entry:
-        # Si ya tiene fecha de expiración, extender desde ahí
-        if entry.get('expire_date'):
-            expire_dt = datetime.fromisoformat(entry['expire_date'])
-            # Si ya expiró, empezar desde ahora
-            if expire_dt < datetime.now():
-                new_expire = datetime.now() + timedelta(days=days)
+    for entry in uids:
+        if entry.get('uid') == str(uid):
+            if entry.get('expire_date'):
+                expire_dt = datetime.fromisoformat(entry['expire_date'])
+                if expire_dt < datetime.now():
+                    new_expire = datetime.now() + timedelta(days=days)
+                else:
+                    new_expire = expire_dt + timedelta(days=days)
             else:
-                new_expire = expire_dt + timedelta(days=days)
-        else:
-            # Primera vez, empezar desde ahora
-            new_expire = datetime.now() + timedelta(days=days)
-        
-        uids_collection.update_one(
-            {"uid": str(uid)},
-            {"$set": {
-                "expire_date": new_expire.isoformat(),
-                "days_remaining": days
-            }}
-        )
-        
-        return jsonify({
-            "success": True,
-            "uid": uid,
-            "days_added": days,
-            "expire_date": new_expire.strftime("%Y-%m-%d %H:%M:%S")
-        })
+                new_expire = datetime.now() + timedelta(days=days)
+            
+            entry['expire_date'] = new_expire.isoformat()
+            entry['days_remaining'] = days
+            
+            save_uids(uids)
+            
+            return jsonify({
+                "success": True,
+                "uid": uid,
+                "days_added": days,
+                "expire_date": new_expire.strftime("%Y-%m-%d %H:%M:%S")
+            })
     
     return jsonify({"error": "UID no encontrado"}), 404
-
 
 @app.route('/uid/<uid>/remove', methods=['DELETE'])
 def remove_uid(uid):
     """Elimina un UID"""
-    if not uids_collection:
-        return jsonify({"error": "Database not connected"}), 500
+    uids = load_uids()
     
-    result = uids_collection.delete_one({"uid": str(uid)})
-    
-    if result.deleted_count > 0:
-        return jsonify({
-            "success": True,
-            "message": f"UID {uid} eliminado"
-        })
+    for i, entry in enumerate(uids):
+        if entry.get('uid') == str(uid):
+            uids.pop(i)
+            save_uids(uids)
+            return jsonify({
+                "success": True,
+                "message": f"UID {uid} eliminado"
+            })
     
     return jsonify({"error": "UID no encontrado"}), 404
-
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
